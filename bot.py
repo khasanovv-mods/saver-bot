@@ -1,13 +1,9 @@
 import os
 import re
-import asyncio
 import logging
 from pathlib import Path
 from datetime import datetime
 import random
-import time
-import subprocess
-import json
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -27,125 +23,48 @@ MAX_FILE_SIZE = 50 * 1024 * 1024
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-# ОПТИМИЗИРОВАННЫЕ настройки для разных платформ
-def get_ydl_opts(quality='best', platform='youtube'):
-    """Настройки для скачивания в зависимости от платформы"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # Базовые настройки для всех платформ
-    base_opts = {
-        'quiet': False,
-        'no_warnings': False,
-        'ignoreerrors': True,
-        'no_check_certificate': True,
-        'prefer_insecure': True,
-        'cookiefile': 'cookies.txt',
-        'socket_timeout': 60,
-        'retries': 20,
-        'fragment_retries': 20,
-        'continuedl': True,
-        'sleep_interval': 2,
-        'max_sleep_interval': 5,
-    }
-    
-    if platform == 'tiktok':
-        # СПЕЦИАЛЬНЫЕ настройки для TikTok
-        opts = {
-            **base_opts,
-            'user_agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36',
-            'headers': {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1',
-            },
-            'extractor_args': {
-                'tiktok': {
-                    'prefer_quality': 'high',
-                    'extract_watermark': False,  # Без водяного знака
-                }
-            },
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-            'merge_output_format': 'mp4',
-            'outtmpl': str(DOWNLOAD_DIR / f'tiktok_{timestamp}.%(ext)s'),
-        }
-        
-        # Для аудио
-        if quality == 'audio':
-            opts['format'] = 'bestaudio[ext=m4a]/bestaudio'
-            opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-            opts['outtmpl'] = str(DOWNLOAD_DIR / f'tiktok_audio_{timestamp}.%(ext)s')
-        
-        return opts
-    
-    else:  # youtube и другие
-        # НАСТРОЙКИ ДЛЯ YOUTUBE (обновленные)
-        opts = {
-            **base_opts,
-            'user_agent': random.choice([
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-            ]),
-            'headers': {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1',
-            },
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'web'],
-                    'skip': ['dash', 'hls'],
-                    'player_skip': ['configs', 'webpage'],
-                    'innertube_client': ['ANDROID', 'WEB'],
-                }
-            },
-            'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-            'merge_output_format': 'mp4',
-            'outtmpl': str(DOWNLOAD_DIR / f'youtube_{timestamp}.%(ext)s'),
-        }
-        
-        # Для аудио
-        if quality == 'audio':
-            opts['format'] = 'bestaudio[ext=m4a]/bestaudio'
-            opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-            opts['outtmpl'] = str(DOWNLOAD_DIR / f'youtube_audio_{timestamp}.%(ext)s')
-        
-        return opts
+# User-Agent для обхода блокировок
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+]
 
-def detect_platform(url):
-    """Определяет платформу по ссылке"""
-    url_lower = url.lower()
-    if any(x in url_lower for x in ['tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com']):
-        return 'tiktok'
-    elif any(x in url_lower for x in ['youtube.com', 'youtu.be']):
-        return 'youtube'
-    elif any(x in url_lower for x in ['instagram.com', 'instagr.am']):
-        return 'instagram'
-    elif 'rutube.ru' in url_lower:
-        return 'rutube'
-    elif any(x in url_lower for x in ['pinterest.com', 'pin.it']):
-        return 'pinterest'
-    else:
-        return 'other'
+# ОПТИМИЗИРОВАННЫЕ настройки для YouTube
+YDL_OPTS_BASE = {
+    'quiet': True,
+    'no_warnings': True,
+    'extract_flat': False,
+    'ignoreerrors': True,
+    'no_check_certificate': True,
+    'prefer_insecure': True,
+    # ВАЖНО: указываем файл с cookies
+    'cookiefile': 'cookies.txt',
+    'user_agent': random.choice(USER_AGENTS),
+    'headers': {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+    },
+    'extractor_args': {
+        'youtube': {
+            # Пробуем разные клиенты
+            'player_client': ['android', 'web', 'ios'],
+            'skip': ['hls', 'dash'],
+            'innertube_client': ['ANDROID', 'WEB'],
+        }
+    },
+    # Таймауты
+    'socket_timeout': 30,
+    'retries': 10,
+    'fragment_retries': 10,
+}
 
 def extract_urls(text):
     """Извлечение ссылок из текста"""
@@ -154,14 +73,13 @@ def extract_urls(text):
     
     video_platforms = [
         'youtube.com', 'youtu.be',
-        'tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com',
+        'tiktok.com', 'vm.tiktok.com',
         'instagram.com', 'instagr.am',
-        'rutube.ru',
         'pinterest.com', 'pin.it',
         'twitter.com', 'x.com',
-        'reddit.com',
+        'reddit.com', 'redd.it',
         'facebook.com', 'fb.com',
-        'vimeo.com',
+        'vimeo.com', 'dailymotion.com',
         'vk.com', 'twitch.tv'
     ]
     
@@ -175,15 +93,48 @@ def extract_urls(text):
     
     return video_urls
 
+def get_ydl_opts(quality='best'):
+    """Настройки для скачивания"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    opts = YDL_OPTS_BASE.copy()
+    opts['user_agent'] = random.choice(USER_AGENTS)
+    
+    if quality == 'best':
+        opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+        opts['merge_output_format'] = 'mp4'
+        opts['outtmpl'] = str(DOWNLOAD_DIR / f'video_best_{timestamp}.%(ext)s')
+    elif quality == 'high':
+        opts['format'] = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best'
+        opts['merge_output_format'] = 'mp4'
+        opts['outtmpl'] = str(DOWNLOAD_DIR / f'video_1080p_{timestamp}.%(ext)s')
+    elif quality == 'medium':
+        opts['format'] = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best'
+        opts['merge_output_format'] = 'mp4'
+        opts['outtmpl'] = str(DOWNLOAD_DIR / f'video_720p_{timestamp}.%(ext)s')
+    elif quality == 'low':
+        opts['format'] = 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best'
+        opts['merge_output_format'] = 'mp4'
+        opts['outtmpl'] = str(DOWNLOAD_DIR / f'video_480p_{timestamp}.%(ext)s')
+    elif quality == 'audio':
+        opts['format'] = 'bestaudio/best'
+        opts['postprocessors'] = [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }]
+        opts['outtmpl'] = str(DOWNLOAD_DIR / f'audio_{timestamp}.%(ext)s')
+    
+    return opts
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     welcome_text = (
         f"🎬 Привет, {user.first_name}!\n\n"
-        "Я скачиваю видео с разных платформ:\n"
-        "• YouTube (включая Shorts) ⚠️ может не работать\n"
-        "• TikTok ✅ (без водяного знака)\n"
-        "• Instagram ✅\n"
-        "• RuTube, Pinterest ✅\n\n"
+        "Я скачиваю видео без водяных знаков:\n"
+        "• YouTube (включая Shorts)\n"
+        "• TikTok, Instagram, Pinterest\n"
+        "• Twitter/X, Reddit, VK\n"
+        "• И другие платформы\n\n"
         "📌 Просто отправь ссылку!\n\n"
         "⚠️ Лимит: до 50 МБ"
     )
@@ -206,27 +157,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🔍 Найдено {len(urls)} ссылок. Беру первую:\n{url}")
     
     context.user_data['url'] = url
-    platform = detect_platform(url)
-    context.user_data['platform'] = platform
-    
-    status_msg = await update.message.reply_text(f"🔄 Получаю информацию о видео с {platform.upper()}...")
+    status_msg = await update.message.reply_text("🔄 Получаю информацию...")
     
     # Пробуем получить информацию
-    info = await get_video_info(url, platform)
+    info = await get_video_info(url)
     
     if not info:
         await status_msg.edit_text(
-            f"❌ Не удалось получить информацию с {platform.upper()}.\n\n"
-            "Возможные причины:\n"
-            "• Видео приватное или удалено\n"
-            "• Платформа обновила защиту\n"
-            "• Проблемы с авторизацией\n\n"
-            "💡 Попробуйте:\n"
-            "• Отправить ссылку еще раз\n"
-            "• Использовать другое видео"
+            "❌ Не удалось получить информацию.\n\n"
+            "💡 Решение: нужно добавить cookies!\n\n"
+            "1. Установите расширение 'Get cookies.txt' в браузере\n"
+            "2. Зайдите на YouTube и авторизуйтесь\n"
+            "3. Экспортируйте cookies в файл cookies.txt\n"
+            "4. Загрузите файл на BotHost в папку с ботом\n\n"
+            "Или попробуйте отправить ссылку позже."
         )
         return
     
+    # Обработка информации
     title = info.get('title', 'video')[:60]
     duration = info.get('duration', 0)
     duration_str = f"⏱️ {duration // 60}:{duration % 60:02d}" if duration else ""
@@ -234,9 +182,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['title'] = title
     
     keyboard = [
-        [InlineKeyboardButton("🎥 Лучшее качество", callback_data="quality_best")],
-        [InlineKeyboardButton("📱 720p", callback_data="quality_high")],
-        [InlineKeyboardButton("📱 480p", callback_data="quality_medium")],
+        [InlineKeyboardButton("🎥 Лучшее", callback_data="quality_best")],
+        [InlineKeyboardButton("📱 1080p", callback_data="quality_high"),
+         InlineKeyboardButton("📱 720p", callback_data="quality_medium")],
+        [InlineKeyboardButton("📱 480p", callback_data="quality_low")],
         [InlineKeyboardButton("🎵 Аудио MP3", callback_data="quality_audio")],
     ]
     
@@ -246,53 +195,41 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-async def get_video_info(url, platform):
-    """Получение информации о видео"""
-    try:
-        if platform == 'tiktok':
-            # Специальные настройки для TikTok
-            opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'ignoreerrors': True,
-                'no_check_certificate': True,
-                'cookiefile': 'cookies.txt',
-                'user_agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36',
-                'extractor_args': {
-                    'tiktok': {
-                        'prefer_quality': 'high',
-                        'extract_watermark': False,
-                    }
-                }
-            }
-        else:
-            # Настройки для YouTube и других
-            opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'ignoreerrors': True,
-                'no_check_certificate': True,
-                'cookiefile': 'cookies.txt',
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android', 'web'],
-                        'skip': ['dash', 'hls'],
-                        'player_skip': ['configs', 'webpage'],
-                    }
-                }
-            }
-        
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+async def get_video_info(url):
+    """Получение информации с несколькими попытками"""
+    methods = [
+        lambda: get_info_with_opts(url, 'android'),
+        lambda: get_info_with_opts(url, 'web'),
+        lambda: get_info_with_opts(url, 'ios'),
+    ]
+    
+    for method in methods:
+        try:
+            info = await asyncio.to_thread(method)
             if info:
-                if info.get('_type') == 'playlist' and info.get('entries'):
-                    info = info['entries'][0]
                 return info
-    except Exception as e:
-        logger.error(f"Ошибка получения информации: {e}")
+        except Exception as e:
+            logger.error(f"Method failed: {e}")
+            continue
     
     return None
+
+def get_info_with_opts(url, client='android'):
+    """Получение информации с определенным клиентом"""
+    opts = YDL_OPTS_BASE.copy()
+    opts['user_agent'] = random.choice(USER_AGENTS)
+    opts['extractor_args'] = {
+        'youtube': {
+            'player_client': [client],
+            'innertube_client': client.upper(),
+        }
+    }
+    
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        if info and info.get('_type') == 'playlist' and info.get('entries'):
+            info = info['entries'][0]
+        return info
 
 async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка выбора качества"""
@@ -301,24 +238,15 @@ async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     quality = query.data.replace('quality_', '')
     url = context.user_data.get('url')
-    platform = context.user_data.get('platform', 'youtube')
     
     if not url:
         await query.edit_message_text("❌ Ссылка не найдена. Отправьте заново.")
         return
     
-    await query.edit_message_text(f"⏳ Скачиваю *{quality.upper()}* с {platform.upper()}...\nЭто может занять время.", parse_mode='Markdown')
+    await query.edit_message_text(f"⏳ Скачиваю *{quality.upper()}*...", parse_mode='Markdown')
     
     try:
-        ydl_opts = get_ydl_opts(quality, platform)
-        
-        # Очищаем старые файлы
-        for old_file in DOWNLOAD_DIR.glob('*.*'):
-            if time.time() - old_file.stat().st_mtime > 300:  # 5 минут
-                try:
-                    old_file.unlink()
-                except:
-                    pass
+        ydl_opts = get_ydl_opts(quality)
         
         def download():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -327,33 +255,16 @@ async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.to_thread(download)
         
         # Ищем скачанный файл
-        await asyncio.sleep(2)
         files = list(DOWNLOAD_DIR.glob('*.*'))
-        
         if not files:
-            await query.edit_message_text("❌ Файл не найден после скачивания.")
+            await query.edit_message_text("❌ Файл не найден.")
             return
         
-        # Сортируем по времени создания
         files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
         filename = str(files[0])
         
-        # Проверяем размер файла
+        # Проверка размера
         file_size = os.path.getsize(filename)
-        logger.info(f"Размер файла: {file_size} байт ({file_size / 1024:.2f} KB)")
-        
-        # Если файл слишком маленький - возможно это превью
-        if file_size < 100 * 1024:  # меньше 100 KB
-            os.remove(filename)
-            await query.edit_message_text(
-                "❌ Скачался только превью/заглушка.\n"
-                "Попробуйте:\n"
-                "• Обновить yt-dlp: pip install --upgrade yt-dlp\n"
-                "• Использовать другую ссылку\n"
-                "• Попробовать позже"
-            )
-            return
-        
         if file_size > MAX_FILE_SIZE:
             os.remove(filename)
             await query.edit_message_text(
@@ -362,50 +273,25 @@ async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
+        # Отправка
         title = context.user_data.get('title', 'video')
         ext = os.path.splitext(filename)[1].lower()
         
-        try:
-            if quality == 'audio' or ext == '.mp3':
-                with open(filename, 'rb') as f:
-                    await query.message.reply_audio(
-                        f,
-                        title=title,
-                        performer="Video Downloader"
-                    )
-            else:
-                with open(filename, 'rb') as f:
-                    await query.message.reply_video(
-                        f,
-                        caption=f"📹 {title}\nИсточник: {platform.upper()}",
-                        supports_streaming=True
-                    )
-            
-            os.remove(filename)
-            await query.edit_message_text("✅ Готово! Видео отправлено.")
-            
-        except Exception as e:
-            logger.error(f"Ошибка отправки: {e}")
-            await query.edit_message_text(f"❌ Ошибка отправки: {str(e)[:100]}")
+        if quality == 'audio' or ext == '.mp3':
+            with open(filename, 'rb') as f:
+                await query.message.reply_audio(f, title=title)
+        else:
+            with open(filename, 'rb') as f:
+                await query.message.reply_video(f, caption=f"📹 {title}")
+        
+        os.remove(filename)
+        await query.edit_message_text("✅ Готово!")
         
     except Exception as e:
-        logger.error(f"Ошибка скачивания: {e}")
+        logger.error(f"Download error: {e}")
         await query.edit_message_text(f"❌ Ошибка: {str(e)[:150]}")
 
 def main():
-    # Проверка
-    if os.path.exists('cookies.txt'):
-        logger.info("✅ cookies.txt найден")
-    else:
-        logger.warning("⚠️ cookies.txt не найден!")
-    
-    # Проверка версии yt-dlp
-    try:
-        import yt_dlp
-        logger.info(f"yt-dlp version: {yt_dlp.version.__version__}")
-    except:
-        pass
-    
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -416,4 +302,5 @@ def main():
     app.run_polling()
 
 if __name__ == '__main__':
+    import asyncio
     main()
