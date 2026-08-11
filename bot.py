@@ -7,7 +7,7 @@ from datetime import datetime
 import random
 import time
 import subprocess
-import sys
+import json
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -27,85 +27,48 @@ MAX_FILE_SIZE = 50 * 1024 * 1024
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-# Проверяем версию yt-dlp
-try:
-    from yt_dlp.version import __version__
-    logger.info(f"yt-dlp версия: {__version__}")
-except:
-    logger.info("yt-dlp версия: неизвестна")
-
-# Функция для проверки ffmpeg
-def check_ffmpeg():
-    try:
-        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=3)
-        return result.returncode == 0
-    except:
-        return False
-
-# User-Agent
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-]
-
-# ОБНОВЛЕННЫЕ настройки для YouTube
+# НОВЫЙ подход для YouTube - используем только мобильные форматы
 YDL_OPTS_BASE = {
     'quiet': False,
     'no_warnings': False,
-    'extract_flat': False,
     'ignoreerrors': True,
     'no_check_certificate': True,
     'prefer_insecure': True,
     'cookiefile': 'cookies.txt',
-    'user_agent': random.choice(USER_AGENTS),
+    'user_agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36',
     'headers': {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
-        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate',
         'Connection': 'keep-alive',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1',
     },
-    # ВАЖНО: новые настройки для обхода блокировок
     'extractor_args': {
         'youtube': {
-            'player_client': ['android', 'web'],
-            'skip': ['hls', 'dash'],
-            'player_skip': ['configs', 'webpage'],
-            'innertube_client': ['ANDROID', 'WEB'],
+            'player_client': ['android'],
+            'skip': ['dash', 'hls'],
+            'player_skip': ['configs', 'webpage', 'js'],
+            'innertube_client': 'ANDROID',
+            'formats': 'best',
         }
     },
     'socket_timeout': 60,
-    'retries': 20,
-    'fragment_retries': 20,
+    'retries': 10,
+    'fragment_retries': 10,
     'continuedl': True,
-    'sleep_interval': 2,
-    'max_sleep_interval': 5,
 }
 
 def get_ydl_opts(quality='best'):
     """Настройки для скачивания"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     opts = YDL_OPTS_BASE.copy()
-    opts['user_agent'] = random.choice(USER_AGENTS)
     
-    # Используем более надежные форматы
+    # Только мобильные форматы (они лучше работают)
     if quality == 'best':
         opts['format'] = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]'
-        opts['merge_output_format'] = 'mp4'
-        opts['outtmpl'] = str(DOWNLOAD_DIR / f'video_best_{timestamp}.%(ext)s')
     elif quality == 'high':
         opts['format'] = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]'
-        opts['merge_output_format'] = 'mp4'
-        opts['outtmpl'] = str(DOWNLOAD_DIR / f'video_720p_{timestamp}.%(ext)s')
     elif quality == 'medium':
         opts['format'] = 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]'
-        opts['merge_output_format'] = 'mp4'
-        opts['outtmpl'] = str(DOWNLOAD_DIR / f'video_480p_{timestamp}.%(ext)s')
     elif quality == 'audio':
         opts['format'] = 'bestaudio[ext=m4a]/bestaudio'
         opts['postprocessors'] = [{
@@ -113,18 +76,9 @@ def get_ydl_opts(quality='best'):
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }]
-        opts['outtmpl'] = str(DOWNLOAD_DIR / f'audio_{timestamp}.%(ext)s')
     
-    # Добавляем обходные параметры для YouTube
-    opts['extractor_args'] = {
-        'youtube': {
-            'player_client': ['android'],
-            'skip': ['hls', 'dash'],
-            'player_skip': ['configs', 'webpage'],
-            'innertube_client': 'ANDROID',
-        }
-    }
-    
+    opts['merge_output_format'] = 'mp4'
+    opts['outtmpl'] = str(DOWNLOAD_DIR / f'video_{timestamp}.%(ext)s')
     return opts
 
 def extract_urls(text):
@@ -141,7 +95,7 @@ def extract_urls(text):
         'twitter.com', 'x.com',
         'reddit.com',
         'facebook.com', 'fb.com',
-        'vimeo.com', 'dailymotion.com',
+        'vimeo.com',
         'vk.com', 'twitch.tv'
     ]
     
@@ -159,10 +113,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     welcome_text = (
         f"🎬 Привет, {user.first_name}!\n\n"
-        "Я скачиваю видео без водяных знаков:\n"
-        "• YouTube (включая Shorts) ✅\n"
-        "• TikTok (без водяного знака) ✅\n"
-        "• RuTube, Instagram, Pinterest ✅\n\n"
+        "Я скачиваю видео с разных платформ:\n"
+        "• YouTube (включая Shorts) ⚠️ может не работать\n"
+        "• TikTok ✅\n"
+        "• Instagram ✅\n"
+        "• RuTube ✅\n\n"
         "📌 Просто отправь ссылку!\n\n"
         "⚠️ Лимит: до 50 МБ"
     )
@@ -187,20 +142,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['url'] = url
     status_msg = await update.message.reply_text("🔄 Получаю информацию о видео...")
     
-    # Получаем информацию
-    info = await get_video_info(url)
+    # Пробуем получить информацию
+    info = await get_video_info_simple(url)
+    
+    if not info:
+        # Пробуем альтернативный метод
+        info = await get_video_info_alternative(url)
     
     if not info:
         await status_msg.edit_text(
             "❌ Не удалось получить информацию.\n\n"
-            "Возможные причины:\n"
-            "• Видео приватное или удалено\n"
-            "• YouTube обновил защиту\n"
-            "• Проблемы с авторизацией\n\n"
-            "💡 Попробуйте:\n"
-            "• Обновить cookies (зайти на YouTube)\n"
-            "• Отправить ссылку позже\n"
-            "• Использовать другое видео"
+            "Для YouTube:\n"
+            "• Попробуйте обновить yt-dlp: pip install --upgrade yt-dlp\n"
+            "• Обновите cookies (зайдите на YouTube)\n"
+            "• Используйте другое видео\n\n"
+            "Для TikTok/Instagram - должно работать."
         )
         return
     
@@ -211,7 +167,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['title'] = title
     
     keyboard = [
-        [InlineKeyboardButton("🎥 1080p", callback_data="quality_best")],
+        [InlineKeyboardButton("🎥 Лучшее", callback_data="quality_best")],
         [InlineKeyboardButton("📱 720p", callback_data="quality_high")],
         [InlineKeyboardButton("📱 480p", callback_data="quality_medium")],
         [InlineKeyboardButton("🎵 Аудио MP3", callback_data="quality_audio")],
@@ -223,39 +179,55 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-async def get_video_info(url):
-    """Получение информации с обходом блокировок"""
+async def get_video_info_simple(url):
+    """Простой метод получения информации"""
     try:
-        opts = YDL_OPTS_BASE.copy()
-        opts['extract_flat'] = False
-        opts['quiet'] = True
-        
-        # Пробуем разные клиенты
-        for client in ['android', 'web']:
-            try:
-                opts['extractor_args'] = {
-                    'youtube': {
-                        'player_client': [client],
-                        'player_skip': ['configs', 'webpage'],
-                    }
+        opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'ignoreerrors': True,
+            'no_check_certificate': True,
+            'cookiefile': 'cookies.txt',
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'extract_flat': False,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
                 }
-                
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    if info:
-                        if info.get('_type') == 'playlist' and info.get('entries'):
-                            info = info['entries'][0]
-                        if info and info.get('title'):
-                            logger.info(f"Успешно получена информация через {client}")
-                            return info
-            except Exception as e:
-                logger.warning(f"Клиент {client} не сработал: {e}")
-                continue
+            }
+        }
         
-        return None
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info:
+                if info.get('_type') == 'playlist' and info.get('entries'):
+                    info = info['entries'][0]
+                return info
     except Exception as e:
-        logger.error(f"Ошибка получения информации: {e}")
-        return None
+        logger.error(f"Simple method failed: {e}")
+    return None
+
+async def get_video_info_alternative(url):
+    """Альтернативный метод получения информации"""
+    try:
+        # Используем внешний API для YouTube
+        import requests
+        
+        # Пробуем получить через youtube-dl (старая версия)
+        import subprocess
+        result = subprocess.run(
+            ['yt-dlp', '--dump-json', '--no-download', '--cookies', 'cookies.txt', url],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode == 0:
+            info = json.loads(result.stdout)
+            return info
+    except Exception as e:
+        logger.error(f"Alternative method failed: {e}")
+    return None
 
 async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка выбора качества"""
@@ -269,7 +241,7 @@ async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Ссылка не найдена. Отправьте заново.")
         return
     
-    await query.edit_message_text(f"⏳ Скачиваю *{quality.upper()}*...\nЭто может занять некоторое время.", parse_mode='Markdown')
+    await query.edit_message_text(f"⏳ Скачиваю *{quality.upper()}*...\nЭто может занять время.", parse_mode='Markdown')
     
     try:
         ydl_opts = get_ydl_opts(quality)
@@ -289,7 +261,7 @@ async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.to_thread(download)
         
         # Ищем скачанный файл
-        await asyncio.sleep(2)  # Даем время на запись файла
+        await asyncio.sleep(2)
         files = list(DOWNLOAD_DIR.glob('*.*'))
         
         if not files:
@@ -312,7 +284,6 @@ async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = context.user_data.get('title', 'video')
         ext = os.path.splitext(filename)[1].lower()
         
-        # Отправка
         try:
             if quality == 'audio' or ext == '.mp3':
                 with open(filename, 'rb') as f:
@@ -347,10 +318,12 @@ def main():
     else:
         logger.warning("⚠️ cookies.txt не найден!")
     
-    if check_ffmpeg():
-        logger.info("✅ FFmpeg установлен")
-    else:
-        logger.warning("⚠️ FFmpeg не найден! Некоторые функции могут не работать.")
+    # Проверка версии yt-dlp
+    try:
+        import yt_dlp
+        logger.info(f"yt-dlp version: {yt_dlp.version.__version__}")
+    except:
+        pass
     
     app = Application.builder().token(TOKEN).build()
     
