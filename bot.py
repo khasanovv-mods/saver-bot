@@ -17,7 +17,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-TOKEN = "ВАШ_ТОКЕН_БОТА"  # Замените на реальный токен
+TOKEN = "8723588644:AAHKrHAqxmR5_C-K6gWGauS86fDpL3TLS7g"  # Замените на реальный токен
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 МБ
 
 # Создаем директорию
